@@ -1,0 +1,43 @@
+{
+  "manifest_version": 3,
+  "name": "matchum",
+  "version": "0.1.0",
+  "minimum_chrome_version": "135",
+  "description": "Make Chrome fit you with a live, programmable JavaScript configuration",
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "matchum recipes"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "permissions": [
+    "tabs",
+    "tabGroups",
+    "scripting",
+    "nativeMessaging",
+    "notifications",
+    "storage",
+    "userScripts",
+    "alarms",
+    "idle"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "lib/core.js",
+        "watcher.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "icons": {
+    "128": "icon.png"
+  }
+}

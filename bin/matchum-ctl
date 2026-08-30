@@ -1,0 +1,184 @@
+#!/usr/bin/env node
+// matchum-ctl — CLI for the matchum daemon.
+// Usage:
+//   matchum-ctl status               daemon, extension, and config status
+//   matchum-ctl tabs                 list open tabs
+//   matchum-ctl notify <message>     show a browser notification
+//   matchum-ctl reload               reload the daemon config
+//   matchum-ctl ext-reload           reload the extension (daemon restarts too)
+//   matchum-ctl eval '<js>'          run js in the daemon (matchum api in scope)
+//   matchum-ctl exec <regex> '<js>'  run js inside the first tab matching regex (url/title)
+//   matchum-ctl snapshot <regex> [--viewport]  actionable elements in that tab (on-screen only with flag)
+//   matchum-ctl visible <regex>      text currently on screen in that tab
+//   matchum-ctl shot <regex> [file]  screenshot that tab to a png
+//   matchum-ctl recipes              list recipes and whether they're on
+//   matchum-ctl on|off <recipe>      switch a recipe (persists, reloads config)
+
+"use strict";
+
+const T0 = Date.now(); // process start ≈ spawn cost is what happened before this
+
+const net = require("net");
+const os = require("os");
+const path = require("path");
+
+const STATE_DIR =
+  process.env.MATCHUM_STATE_DIR || path.join(os.homedir(), ".local", "state", "matchum");
+const SOCK_PATH = process.env.MATCHUM_SOCK || path.join(STATE_DIR, "matchum.sock");
+
+const [, , command, ...rest] = process.argv;
+
+function usage() {
+  console.error("usage: matchum-ctl <status|tabs|notify|reload|ext-reload|eval|exec|snapshot|visible|shot|recipes|on|off> [args]");
+  process.exit(2);
+}
+
+if (!command) usage();
+
+let req;
+switch (command) {
+  case "status":
+    req = { cmd: "status" };
+    break;
+  case "tabs":
+    req = { cmd: "tabs" };
+    break;
+  case "notify":
+    req = { cmd: "notify", msg: rest.join(" ") };
+    break;
+  case "reload":
+    req = { cmd: "reload" };
+    break;
+  case "ext-reload":
+    req = { cmd: "ext-reload" };
+    break;
+  case "eval":
+    if (!rest.length) usage();
+    req = { cmd: "eval", code: rest.join(" ") };
+    break;
+  case "exec": {
+    const [re, ...js] = rest;
+    if (!re || !js.length) usage();
+    req = {
+      cmd: "eval",
+      code: `${findTab(re)} return await t.exec(${JSON.stringify(js.join(" "))});`,
+    };
+    break;
+  }
+  case "snapshot": {
+    if (!rest[0]) usage();
+    const vp = rest.includes("--viewport");
+    req = {
+      cmd: "eval",
+      code: `${findTab(rest[0])} return await t.snapshot({ viewport: ${vp} });`,
+    };
+    break;
+  }
+  case "visible": {
+    if (!rest[0]) usage();
+    req = { cmd: "eval", code: `${findTab(rest[0])} return await t.visibleText();` };
+    break;
+  }
+  case "shot": {
+    if (!rest[0]) usage();
+    req = {
+      cmd: "eval",
+      code: `${findTab(rest[0])} return await t.screenshot(${JSON.stringify(rest[1] || "")} || undefined);`,
+    };
+    break;
+  }
+  case "recipes":
+    req = { cmd: "recipes" };
+    break;
+  case "on":
+  case "off":
+    if (!rest[0]) usage();
+    req = { cmd: "recipe", name: rest[0], enabled: command === "on" };
+    break;
+  default:
+    usage();
+}
+
+function findTab(input) {
+  return `const t = await matchum.tabs.find(${asRegex(input)}); if (!t) throw new Error(${JSON.stringify(`no tab matches ${input}`)});`;
+}
+
+// "/foo/i" keeps regex semantics; bare text becomes escaped and case-insensitive.
+// Always serialize a RegExp constructor instead of interpolating executable text.
+function asRegex(s) {
+  let source = s.replace(/[.*+?^\${}()|[\]\\]/g, "\\$&");
+  let flags = "i";
+  if (s.startsWith("/")) {
+    const delimiter = s.lastIndexOf("/");
+    if (delimiter > 0) {
+      source = s.slice(1, delimiter);
+      flags = s.slice(delimiter + 1);
+      if (!/^[dgimsuvy]*$/.test(flags)) {
+        console.error(`invalid regex flags: ${flags}`);
+        process.exit(2);
+      }
+    }
+  }
+  try {
+    new RegExp(source, flags);
+  } catch (e) {
+    console.error(`invalid regex: ${e.message}`);
+    process.exit(2);
+  }
+  return `new RegExp(${JSON.stringify(source)}, ${JSON.stringify(flags)})`;
+}
+
+const conn = net.createConnection(SOCK_PATH, () => {
+  conn.write(JSON.stringify(req) + "\n");
+});
+// Idle timeout guards against a stuck daemon. It must comfortably exceed a
+// legitimate long-running eval (batched multi-page scrapes run for minutes and
+// send nothing until they finish), so the default is high; override with
+// MATCHUM_CTL_TIMEOUT_MS for scripts that want to fail fast.
+const TIMEOUT_MS = Number(process.env.MATCHUM_CTL_TIMEOUT_MS) > 0
+  ? Number(process.env.MATCHUM_CTL_TIMEOUT_MS)
+  : 600000;
+conn.setTimeout(TIMEOUT_MS, () => {
+  const error = new Error("daemon response timed out");
+  error.code = "ETIMEDOUT";
+  conn.destroy(error);
+});
+
+let buf = "";
+conn.on("data", (c) => (buf += c.toString("utf8")));
+conn.on("end", () => {
+  let res;
+  try {
+    res = JSON.parse(buf);
+  } catch (e) {
+    console.error("bad response:", buf);
+    process.exit(1);
+  }
+  if (!res.ok) {
+    console.error("error:", res.error);
+    console.error(`[t] total ${Date.now() - T0}ms · daemon ${res.ms ?? "?"}ms`);
+    process.exit(1);
+  }
+  if (command === "tabs" && Array.isArray(res.result)) {
+    for (const t of res.result) {
+      const group = t.groupId >= 0 ? ` [g${t.groupId}]` : "";
+      console.log(`${String(t.id).padStart(6)}${t.active ? " *" : "  "}${group} ${t.title || "(untitled)"}\n         ${t.url}`);
+    }
+  } else {
+    console.log(JSON.stringify(res.result, null, 2));
+  }
+  // Timing to stderr, always: total = spawn+connect+daemon+print, daemon = handler only.
+  const total = Date.now() - T0;
+  console.error(`[t] total ${total}ms · daemon ${res.ms ?? "?"}ms · overhead ${total - (res.ms ?? 0)}ms`);
+});
+conn.on("error", (e) => {
+  if (e.code === "ETIMEDOUT") {
+    console.error(
+      `no response from the daemon within ${TIMEOUT_MS}ms — it may still be working. ` +
+        `Raise MATCHUM_CTL_TIMEOUT_MS for long-running evals.`
+    );
+  } else {
+    console.error(`cannot reach daemon at ${SOCK_PATH} (${e.code}). Is Chrome running with the matchum extension?`);
+  }
+  process.exit(1);
+});

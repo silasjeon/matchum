@@ -1,0 +1,16 @@
+{
+  "name": "matchum",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Make your browser fit you with a live JavaScript configuration",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node test/run.mjs",
+    "test:unit": "node test/unit.mjs",
+    "test:integration": "node test/harness.mjs",
+    "test:install": "node test/install.mjs"
+  }
+}

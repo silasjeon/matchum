@@ -1,0 +1,172 @@
+#!/usr/bin/env node
+// Validate a matchum installation without changing it.
+
+"use strict";
+
+const crypto = require("node:crypto");
+const fs = require("node:fs");
+const net = require("node:net");
+const os = require("node:os");
+const path = require("node:path");
+
+const home = os.homedir();
+const configDir = process.env.MATCHUM_CONFIG_DIR || path.join(home, ".config", "matchum");
+const installDir = process.env.MATCHUM_INSTALL_DIR || path.join(home, ".local", "share", "matchum");
+const stateDir = process.env.MATCHUM_STATE_DIR || path.join(home, ".local", "state", "matchum");
+const nativeHostDir =
+  process.env.MATCHUM_NATIVE_HOST_DIR ||
+  path.join(home, "Library", "Application Support", "Google", "Chrome", "NativeMessagingHosts");
+const socketPath = process.env.MATCHUM_SOCK || path.join(stateDir, "matchum.sock");
+const hostName = "com.matchum.daemon";
+
+let failures = 0;
+
+function report(kind, message) {
+  const stream = kind === "FAIL" ? process.stderr : process.stdout;
+  stream.write(`${kind.padEnd(4)}  ${message}\n`);
+  if (kind === "FAIL") failures++;
+}
+
+const pass = (message) => report("PASS", message);
+const warn = (message) => report("WARN", message);
+const fail = (message) => report("FAIL", message);
+
+function readJson(file, label) {
+  try {
+    return JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch (error) {
+    fail(`${label}: ${error.message}`);
+    return null;
+  }
+}
+
+function extensionId(publicKey) {
+  const hex = crypto.createHash("sha256").update(publicKey).digest("hex").slice(0, 32);
+  return [...hex].map((char) => String.fromCharCode(97 + Number.parseInt(char, 16))).join("");
+}
+
+function queryDaemon() {
+  if (!fs.existsSync(socketPath)) {
+    warn("daemon is not connected (Chrome may be closed)");
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    const conn = net.createConnection(socketPath);
+    let body = "";
+    let settled = false;
+    const done = () => {
+      if (settled) return;
+      settled = true;
+      conn.setTimeout(0);
+      conn.destroy();
+      resolve();
+    };
+    const finish = (kind, message) => {
+      if (settled) return;
+      report(kind, message);
+      done();
+    };
+    conn.setTimeout(2000, () => finish("FAIL", "daemon status request timed out"));
+    conn.on("connect", () => conn.write(`${JSON.stringify({ cmd: "status" })}\n`));
+    conn.on("data", (chunk) => (body += chunk.toString("utf8")));
+    conn.on("end", () => {
+      try {
+        const response = JSON.parse(body);
+        if (!response.ok) return finish("FAIL", `daemon status failed: ${response.error}`);
+        const status = response.result ?? {};
+        if (status.config?.ok === false) {
+          const behavior = status.config.retainedPrevious
+            ? "last-known-good config retained"
+            : "no successful config loaded";
+          warn(`config error (${behavior}): ${status.config.error}`);
+        } else {
+          pass("daemon config generation is healthy");
+        }
+        if (status.extension?.error) {
+          fail(`extension handshake: ${status.extension.error}`);
+        } else if (!status.extension?.connected) {
+          warn("daemon is running but the extension handshake is not ready");
+        } else {
+          pass(`daemon and extension connected (protocol v${status.protocol})`);
+        }
+        done();
+      } catch (error) {
+        finish("FAIL", `invalid daemon status response: ${error.message}`);
+      }
+    });
+    conn.on("error", (error) => finish("FAIL", `cannot reach daemon: ${error.message}`));
+  });
+}
+
+async function main() {
+  const major = Number(process.versions.node.split(".")[0]);
+  if (major >= 22) pass(`Node ${process.versions.node}`);
+  else fail(`Node 22 or newer required; found ${process.versions.node}`);
+
+  const marker = path.join(installDir, ".matchum-install");
+  if (fs.existsSync(marker)) pass(`managed install at ${installDir}`);
+  else fail(`managed install marker missing: ${marker}`);
+
+  const metadata = readJson(path.join(installDir, "install.json"), "install metadata");
+  if (metadata) {
+    if (["release", "dev"].includes(metadata.mode)) pass(`${metadata.mode} mode metadata`);
+    else fail(`unknown install mode: ${metadata.mode}`);
+  }
+
+  const keyFile = path.join(configDir, "key.pem");
+  let publicDer = null;
+  try {
+    const key = fs.readFileSync(keyFile);
+    publicDer = crypto.createPublicKey(key).export({ type: "spki", format: "der" });
+    const mode = fs.statSync(keyFile).mode & 0o777;
+    if (mode === 0o600) pass(`extension identity at ${keyFile}`);
+    else fail(`extension identity permissions are ${mode.toString(8)}; expected 600`);
+  } catch (error) {
+    fail(`extension identity: ${error.message}`);
+  }
+
+  const extensionDir = metadata?.extension;
+  const manifest = extensionDir
+    ? readJson(path.join(extensionDir, "manifest.json"), "extension manifest")
+    : null;
+  let id = null;
+  if (manifest && publicDer) {
+    const embedded = Buffer.from(manifest.key || "", "base64");
+    if (embedded.equals(publicDer)) pass("extension manifest uses the installed identity");
+    else fail("extension manifest key does not match the installed identity");
+    id = extensionId(publicDer);
+    if (metadata.extensionId === id) pass(`extension id ${id}`);
+    else fail("install metadata contains a different extension id");
+  }
+
+  const nativeManifest = readJson(path.join(nativeHostDir, `${hostName}.json`), "native-host manifest");
+  if (nativeManifest) {
+    if (nativeManifest.name === hostName && nativeManifest.type === "stdio") {
+      pass("native-host manifest shape");
+    } else {
+      fail("native-host manifest has an unexpected name or type");
+    }
+    if (path.isAbsolute(nativeManifest.path) && fs.existsSync(nativeManifest.path)) {
+      pass(`native host at ${nativeManifest.path}`);
+    } else {
+      fail(`native host path is missing or not absolute: ${nativeManifest.path}`);
+    }
+    if (id && nativeManifest.allowed_origins?.includes(`chrome-extension://${id}/`)) {
+      pass("native host allows the installed extension id");
+    } else if (id) {
+      fail("native host does not allow the installed extension id");
+    }
+  }
+
+  const configFile = path.join(configDir, "config.js");
+  if (fs.existsSync(configFile)) pass(`config at ${configFile}`);
+  else warn(`no config at ${configFile}; matchum will run with an empty config`);
+
+  await queryDaemon();
+  process.exitCode = failures ? 1 : 0;
+}
+
+main().catch((error) => {
+  fail(error.stack || error.message);
+  process.exitCode = 1;
+});
