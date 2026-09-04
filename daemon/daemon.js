@@ -690,7 +690,7 @@ function loadConfig() {
       failedAt: null,
       retainedPrevious: false,
     };
-    watchedModuleFiles = new Set([CONFIG_PATH, ...configModules]);
+    watchedModuleFiles = new Set([CONFIG_PATH, ...dependencyFiles(configModules)]);
     syncExtensionState();
   } else {
     disposeConfigState(candidate);
@@ -707,7 +707,10 @@ function loadConfig() {
     };
     // Keep prior dependency paths watched while also watching every module the
     // failed candidate reached. Fixing either should retry the full generation.
-    watchedModuleFiles = new Set([CONFIG_PATH, ...previousWatchedFiles, ...candidateModules]);
+    watchedModuleFiles = new Set([
+      CONFIG_PATH,
+      ...dependencyFiles([...previousWatchedFiles, ...candidateModules]),
+    ]);
     queueConfigFailureNotice(loadError, hadSuccessfulConfig);
   }
   updateDependencyWatchers(watchedModuleFiles);
@@ -738,8 +741,20 @@ function onPolledConfigChange(current, previous) {
   }
 }
 
+// The config entry reaches require.cache under its real path, which differs from
+// CONFIG_PATH whenever a symlink is involved (a dotfiles-linked ~/.config, or
+// macOS's /var → /private/var tmp dir). Comparing by string alone would poll the
+// config as a dependency on top of the directory watcher and reload it twice.
+function dependencyFiles(files) {
+  let configReal = CONFIG_PATH;
+  try {
+    configReal = fs.realpathSync(CONFIG_PATH);
+  } catch {}
+  return [...files].filter((file) => file !== CONFIG_PATH && file !== configReal);
+}
+
 function updateDependencyWatchers(files) {
-  const next = new Set([...files].filter((file) => file !== CONFIG_PATH));
+  const next = new Set(dependencyFiles(files));
   for (const [file, listener] of dependencyWatchers) {
     if (next.has(file)) continue;
     fs.unwatchFile(file, listener);

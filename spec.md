@@ -182,7 +182,10 @@ Saving a recipe or local helper evicts that graph and triggers a new transaction
 so helper-only edits do not leave stale closures or require-cache entries. Dependencies loaded
 before a failed root module throws are retained in the watch set so fixing the helper retries
 the generation. On failure, the candidate graph is removed and the exact previous module objects
-and parent links are restored, so a retained handler cannot resolve a candidate helper.
+and parent links are restored, so a retained handler cannot resolve a candidate helper. The config
+entry itself is watched only by the directory watcher: it is recognized by real path, so a config
+reached through a symlink (a dotfiles-linked `~/.config`, macOS's `/var` → `/private/var`) is not
+also polled as a dependency, which would reload every save twice.
 
 The graph boundary is the synchronous config/recipe installation phase. Every local helper must
 be required during that phase (normally with a top-level `require()`), even if handlers call

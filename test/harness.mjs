@@ -519,6 +519,23 @@ try {
   );
   const lastKnownLazyName = lazyAction.params.name;
   check("eagerly declared helper remains callable lazily", !!lastKnownLazyName);
+  const lazyStatus = JSON.parse(
+    await new Promise((resolve, reject) => {
+      execFile(
+        process.execPath,
+        [path.join(ROOT, "bin", "matchum-ctl"), "status"],
+        { env: { ...process.env, MATCHUM_SOCK: SOCK } },
+        (error, stdout, stderr) => (error ? reject(new Error(stderr)) : resolve(stdout))
+      );
+    })
+  );
+  // TMP sits behind a symlink on macOS (/var → /private/var), so the config entry
+  // appears in require.cache under a different string than MATCHUM_CONFIG. It must
+  // still count once: polling it as a dependency would reload every save twice.
+  check(
+    "config entry is watched once even when its path is symlinked",
+    lazyStatus.config.watchedFiles === 2
+  );
 
   // 5. A config that throws discards its partial generation while preserving
   // the last-known-good behavior and CommonJS cache objects.
