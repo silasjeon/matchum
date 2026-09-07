@@ -6,6 +6,11 @@
 
 **Make the browser fit you.**
 
+<p align="center">
+  <img src="assets/demo.gif" alt="Edit config.js, save, and the Hacker News tab that is already open restyles itself instantly" width="900">
+</p>
+<p align="center"><sub>Save <code>~/.config/matchum/config.js</code> and the open tab changes. No build, no extension reload.</sub></p>
+
 *Matchum* (맞춤) means “made to fit” in Korean. Give your browser a config file, then
 observe, react, and reshape the web with ordinary JavaScript — without building
 a Chrome extension for every idea.
