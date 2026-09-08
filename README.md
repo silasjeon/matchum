@@ -110,13 +110,15 @@ recipes, and interacts with it through `matchum-ctl`.
 
 ## Install
 
-Requires macOS + Chrome 135 or newer + Node 22 or newer. (Other platforms are untested: the
-daemon is plain Node, but the installer is a zsh script that needs `openssl` and defaults to
-Chrome's macOS native-messaging directory — override it with `MATCHUM_NATIVE_HOST_DIR`.)
+Requires macOS + Chrome 135 or newer + Node 22 or newer (`brew install node` or nvm). (Other
+platforms are untested: the daemon is plain Node, but the installer is a zsh script that needs
+`openssl` and defaults to Chrome's macOS native-messaging directory — override it with
+`MATCHUM_NATIVE_HOST_DIR`.)
 
 For a stable local install from a checkout of this repository:
 
 ```sh
+git clone https://github.com/silasjeon/matchum.git && cd matchum
 ./scripts/install.sh
 # chrome://extensions → Developer mode → "Load unpacked"
 # choose ~/.local/share/matchum/extension
