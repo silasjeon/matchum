@@ -97,6 +97,13 @@ chrome.tabs.onRemoved.addListener((tabId, info) =>
   emit("tab.removed", { tabId, windowId: info.windowId })
 );
 
+// onReplaced fires when Chrome swaps a tab for a new one with a DIFFERENT id
+// (prerender / instant navigation / bfcache). Forward it so the daemon can keep
+// id-based tracking (e.g. temp tabs) exact instead of stranding the old id.
+chrome.tabs.onReplaced.addListener((addedTabId, removedTabId) =>
+  emit("tab.replaced", { addedTabId, removedTabId })
+);
+
 chrome.tabs.onActivated.addListener(async (info) => {
   try {
     const tab = await chrome.tabs.get(info.tabId);

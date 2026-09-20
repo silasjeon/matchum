@@ -55,7 +55,9 @@ events and requests until a compatible greeting arrives, while the extension sho
 badge/title. A successful greeting clears the error and republishes the current runtime state.
 
 Events: `tab.created`, `tab.updated` (only on status complete / url / title changes),
-`tab.removed`, `tab.activated`, `window.focused`, `watch.hit` (content-script watch results),
+`tab.removed`, `tab.replaced` (Chrome swapped a tab for one with a new id — prerender /
+instant navigation / bfcache — `{addedTabId, removedTabId}`; lets the daemon keep id-based
+tracking exact), `tab.activated`, `window.focused`, `watch.hit` (content-script watch results),
 `idle.changed` (`chrome.idle` — `{state: active|idle|locked}`, 60s no-input threshold),
 `page.activity` (content-script activity beacon — `{tabId, url, title, visible, activeSec,
 scrolls, keys, clicks, selects, moves, depth, reason}`. Instrumentation is opt-in: input
@@ -114,7 +116,16 @@ Malformed messages are logged and dropped (strict validation).
   context. Fully re-registered on config reload. **Because MV3 bans remote code, the only
   sanctioned channel for arbitrary JS in pages is `chrome.userScripts`** — the user must
   enable "Allow User Scripts" on the extension's details page (a clear error otherwise)
-- `matchum.notify(message, title?)`, `matchum.open(url, active?)`, `matchum.log(...)`
+- `matchum.notify(message, title?)`, `matchum.log(...)`
+- `matchum.open(url, active?)` or `matchum.open(url, {active?, temp?})` — open a tab and
+  return its payload. **`temp:true`** hands the tab's lifecycle to the daemon: it is tracked
+  by exact tab id (never by URL/group, so the user's own tabs are never matched) and
+  auto-closed once it has gone untouched for `TEMP_TTL_MS` (15 min) — "touched" = any `tab.*`
+  command targeting it, so a page being read stays alive and only ages out after the task
+  stops using it. A hard cap (`TEMP_MAX` = 50) closes the oldest-touched early. Tracking is
+  in-memory (a daemon restart just orphans a few tabs) and survives config reloads and tab-id
+  swaps (via `tab.replaced` remapping).
+- `matchum.closeTemp()` — close every daemon-owned temp tab now; returns the count closed
 - `matchum.tabs.list()` / `matchum.tabs.find(regex)` — return wrapped tabs
 - Wrapped tab methods: `activate() close() reload() moveToGroup(name) text()
   query(selector)` plus the agent action API:

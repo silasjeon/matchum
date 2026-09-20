@@ -119,6 +119,9 @@ const pending = new Map(); // id -> {resolve, reject, timer}
 const CMD_TIMEOUT_MS = 10000;
 
 function cmd(method, params) {
+  // Any command aimed at a temp tab counts as "touched" — keeps a tab that is
+  // actively being read/acted on from ageing out mid-task.
+  if (params && typeof params.tabId === "number") touchTempTab(params.tabId);
   return new Promise((resolve, reject) => {
     const id = nextCmdId++;
     const timer = setTimeout(() => {
@@ -214,6 +217,66 @@ let loadingModuleRoots = null;
 let configModules = new Set();
 let watchedModuleFiles = new Set();
 let pendingConfigFailureNotice = null;
+
+// ---- temporary tabs ----------------------------------------------------
+// Tabs opened with matchum.open(url, { temp: true }) are OWNED by the daemon:
+// tracked by exact tab id (never by URL or group, so the user's own tabs can
+// never be matched) and auto-closed once they have gone untouched for
+// TEMP_TTL_MS. "Touched" = any tab.* command targeting the tab (a page being
+// read stays alive; once a task finishes and nothing touches it, it ages out).
+// This map lives at module scope, not in `state`, so it survives config
+// reloads. It is intentionally in-memory: a daemon restart just orphans a few
+// tabs (the pre-existing behavior), never closes the wrong one. onReplaced
+// remapping (see dispatch) keeps the id exact even when Chrome swaps a tab's
+// id, e.g. on a prerender/instant-navigation swap.
+const TEMP_TTL_MS = 15 * 60 * 1000; // untouched for 15 min -> close
+const TEMP_MAX = 50; // hard cap; oldest-touched beyond this are closed early
+const tempTabs = new Map(); // tabId -> { createdAt, lastTouched }
+
+function markTempTab(tabId) {
+  if (typeof tabId !== "number") return;
+  const now = Date.now();
+  tempTabs.set(tabId, { createdAt: now, lastTouched: now });
+}
+
+function touchTempTab(tabId) {
+  const meta = tempTabs.get(tabId);
+  if (meta) meta.lastTouched = Date.now();
+}
+
+async function closeTempTabs(ids) {
+  let closed = 0;
+  for (const id of ids) {
+    tempTabs.delete(id); // drop first so a re-entrant touch can't resurrect it
+    try {
+      await cmd("tab.close", { tabId: id });
+      closed++;
+    } catch (e) {
+      /* tab already gone */
+    }
+  }
+  return closed;
+}
+
+function sweepTempTabs() {
+  const now = Date.now();
+  const expired = new Set();
+  for (const [id, meta] of tempTabs) {
+    if (now - meta.lastTouched > TEMP_TTL_MS) expired.add(id);
+  }
+  const remaining = tempTabs.size - expired.size;
+  if (remaining > TEMP_MAX) {
+    const live = [...tempTabs]
+      .filter(([id]) => !expired.has(id))
+      .sort((a, b) => a[1].lastTouched - b[1].lastTouched);
+    for (const [id] of live.slice(0, remaining - TEMP_MAX)) expired.add(id);
+  }
+  if (expired.size) closeTempTabs([...expired]).catch(() => {});
+}
+
+const tempSweepTimer = setInterval(sweepTempTabs, 60 * 1000);
+tempSweepTimer.unref?.();
+
 let configStatus = {
   ok: true,
   error: null,
@@ -543,7 +606,26 @@ const matchum = {
   refreshPage: (name) => cmd("page.refresh", { name }).catch(() => {}),
 
   notify: (message, title) => cmd("notify", { message, title }),
-  open: (url, active) => cmd("tab.open", { url, active }),
+  // open(url) | open(url, active) | open(url, { active?, temp? }).
+  // temp:true hands the tab's lifecycle to the daemon (auto-closed when it has
+  // gone untouched for TEMP_TTL_MS, or via matchum.closeTemp()). Back-compat:
+  // a boolean/omitted second arg is still `active`.
+  open: (url, activeOrOpts) => {
+    let active = true;
+    let temp = false;
+    if (activeOrOpts && typeof activeOrOpts === "object") {
+      active = activeOrOpts.active ?? true;
+      temp = !!activeOrOpts.temp;
+    } else if (activeOrOpts !== undefined) {
+      active = activeOrOpts;
+    }
+    return cmd("tab.open", { url, active }).then((tab) => {
+      if (temp && tab && typeof tab.id === "number") markTempTab(tab.id);
+      return tab;
+    });
+  },
+  // Close every daemon-owned temp tab right now; returns the count closed.
+  closeTemp: () => closeTempTabs([...tempTabs.keys()]),
   log: (...args) => log("[config]", ...args),
 
   tabs: {
@@ -569,6 +651,16 @@ async function runUser(fn, label, ...args) {
 }
 
 function dispatch(event, data) {
+  // Temp-tab bookkeeping (before user handlers). A closed temp tab leaves the
+  // owned set; a replaced one (prerender/instant-nav swap gives it a new id)
+  // is remapped so tracking stays exact and never orphans.
+  if (event === "tab.removed") {
+    tempTabs.delete(data.tabId);
+  } else if (event === "tab.replaced" && tempTabs.has(data.removedTabId)) {
+    const meta = tempTabs.get(data.removedTabId);
+    tempTabs.delete(data.removedTabId);
+    tempTabs.set(data.addedTabId, { createdAt: meta.createdAt, lastTouched: Date.now() });
+  }
   if (event === "watch.hit" && typeof data.watchId === "string") {
     const w = state.watches.find((x) => x.id === data.watchId);
     // Stale id after a config reload is normal; drop silently.
