@@ -620,7 +620,10 @@ const matchum = {
       active = activeOrOpts;
     }
     return cmd("tab.open", { url, active }).then((tab) => {
-      if (temp && tab && typeof tab.id === "number") markTempTab(tab.id);
+      if (tab && typeof tab.id === "number") {
+        if (temp) markTempTab(tab.id);
+        return wrapTab(tab);
+      }
       return tab;
     });
   },
@@ -632,6 +635,15 @@ const matchum = {
     async list() {
       const tabs = await cmd("tabs.query");
       return tabs.map(wrapTab);
+    },
+    // Fetch one tab by its stable id (from open(), list(), or the id column of
+    // `matchum-ctl tabs`) as a wrapped, actionable tab. Returns null if no open
+    // tab has that id — it was closed, or Chrome replaced it (prerender/bfcache
+    // assign a new id); re-open or find() in that case.
+    async get(id) {
+      if (typeof id !== "number") throw new Error("matchum.tabs.get(id: number)");
+      const hit = (await cmd("tabs.query")).find((t) => t.id === id);
+      return hit ? wrapTab(hit) : null;
     },
     async find(re) {
       if (!(re instanceof RegExp)) throw new Error("matchum.tabs.find(pattern: RegExp)");

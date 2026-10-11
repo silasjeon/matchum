@@ -7,10 +7,10 @@
 //   matchum-ctl reload               reload the daemon config
 //   matchum-ctl ext-reload           reload the extension (daemon restarts too)
 //   matchum-ctl eval '<js>'          run js in the daemon (matchum api in scope)
-//   matchum-ctl exec <regex> '<js>'  run js inside the first tab matching regex (url/title)
-//   matchum-ctl snapshot <regex> [--viewport]  actionable elements in that tab (on-screen only with flag)
-//   matchum-ctl visible <regex>      text currently on screen in that tab
-//   matchum-ctl shot <regex> [file]  screenshot that tab to a png
+//   matchum-ctl exec <regex|#id> '<js>'  run js inside the tab matching regex (url/title) or #<id>
+//   matchum-ctl snapshot <regex|#id> [--viewport]  actionable elements in that tab (on-screen only with flag)
+//   matchum-ctl visible <regex|#id>   text currently on screen in that tab
+//   matchum-ctl shot <regex|#id> [file]  screenshot that tab to a png
 //   matchum-ctl recipes              list recipes and whether they're on
 //   matchum-ctl on|off <recipe>      switch a recipe (persists, reloads config)
 
@@ -100,6 +100,10 @@ switch (command) {
 }
 
 function findTab(input) {
+  const asId = String(input).match(/^#(\d+)$/);
+  if (asId) {
+    return `const t = await matchum.tabs.get(${asId[1]}); if (!t) throw new Error(${JSON.stringify(`no tab with id ${asId[1]}`)});`;
+  }
   return `const t = await matchum.tabs.find(${asRegex(input)}); if (!t) throw new Error(${JSON.stringify(`no tab matches ${input}`)});`;
 }
 

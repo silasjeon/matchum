@@ -118,7 +118,8 @@ Malformed messages are logged and dropped (strict validation).
   enable "Allow User Scripts" on the extension's details page (a clear error otherwise)
 - `matchum.notify(message, title?)`, `matchum.log(...)`
 - `matchum.open(url, active?)` or `matchum.open(url, {active?, temp?})` — open a tab and
-  return its payload. **`temp:true`** hands the tab's lifecycle to the daemon: it is tracked
+  return it as a wrapped, actionable tab (methods below) — act on the page directly, no
+  follow-up `find` needed. **`temp:true`** hands the tab's lifecycle to the daemon: it is tracked
   by exact tab id (never by URL/group, so the user's own tabs are never matched) and
   auto-closed once it has gone untouched for `TEMP_TTL_MS` (15 min) — "touched" = any `tab.*`
   command targeting it, so a page being read stays alive and only ages out after the task
@@ -126,7 +127,10 @@ Malformed messages are logged and dropped (strict validation).
   in-memory (a daemon restart just orphans a few tabs) and survives config reloads and tab-id
   swaps (via `tab.replaced` remapping).
 - `matchum.closeTemp()` — close every daemon-owned temp tab now; returns the count closed
-- `matchum.tabs.list()` / `matchum.tabs.find(regex)` — return wrapped tabs
+- `matchum.tabs.list()` / `matchum.tabs.get(id)` / `matchum.tabs.find(regex)` — return
+  wrapped tabs. `get(id)` resolves a stable tab id (from `open()`/`list()`/the `matchum-ctl
+  tabs` id column) to the tab or null; prefer it over re-matching a tab you already opened.
+  CLI tab arguments accept `#<id>` as well as a url/title regex
 - Wrapped tab methods: `activate() close() reload() moveToGroup(name) text()
   query(selector)` plus the agent action API:
   - `exec(js, {world?})` — run JS inside the page; `return` values come back, `await` works

@@ -128,7 +128,12 @@ daemon.stdout.on("data", (chunk) => {
     received.push(msg);
     if (msg.type === "cmd") {
       if (!knownCommands.has(msg.method)) unexpectedCommands.add(msg.method);
-      const result = msg.method === "tabs.query" ? FAKE_TABS : true;
+      const result =
+        msg.method === "tabs.query"
+          ? FAKE_TABS
+          : msg.method === "tab.open"
+            ? { id: 42, url: msg.params.url, title: "opened", status: "complete", windowId: 1, groupId: -1, active: msg.params.active ?? true, pinned: false }
+            : true;
       daemon.stdin.write(
         frame(
           knownCommands.has(msg.method)
@@ -310,6 +315,30 @@ try {
     );
   });
   check("matchum.tabs.find treats global regexes as stateless", findOut.trim() === "[\n  1,\n  1\n]");
+
+  const evalCtl = (js) =>
+    new Promise((resolve, reject) => {
+      execFile(
+        process.execPath,
+        [path.join(ROOT, "bin", "matchum-ctl"), "eval", js],
+        { env: { ...process.env, MATCHUM_SOCK: SOCK } },
+        (err, stdout, stderr) => (err ? reject(new Error(stderr)) : resolve(stdout))
+      );
+    });
+  const getOut = await evalCtl(
+    "const t = await matchum.tabs.get(1); const m = await matchum.tabs.get(999); return [t?.id, typeof t?.text, m];"
+  );
+  check(
+    "matchum.tabs.get(id) returns a wrapped tab, null for a missing id",
+    getOut.trim() === '[\n  1,\n  "function",\n  null\n]'
+  );
+  const openOut = await evalCtl(
+    "const t = await matchum.open(\"https://opened.example\"); return [t.id, typeof t.text, typeof t.snapshot];"
+  );
+  check(
+    "matchum.open() returns an actionable wrapped tab",
+    openOut.trim() === '[\n  42,\n  "function",\n  "function"\n]'
+  );
 
   // 2b-5. recipes: ext->daemon req/reply lists the recipe; set(off) persists and unloads it
   daemon.stdin.write(frame({ type: "req", id: 901, method: "recipes.list", params: {} }));
