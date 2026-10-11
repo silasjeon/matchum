@@ -157,7 +157,8 @@ intentionally retains config, state, and the identity key. Remove the unpacked e
 | `matchum.style(re, css)` | inject CSS into matching pages — live theming, applied on save |
 | `matchum.overlay(id, re, {html, css})` | shadow-DOM widget drawn on matching pages |
 | `matchum.run(re, js)` | Tampermonkey-style persistent user scripts (`chrome.userScripts`) |
-| `matchum.tabs.list() / find(re)` | wrapped tabs: `activate close reload moveToGroup text query exec snapshot click type screenshot visibleText` |
+| `matchum.open(url, {temp?})` | open a tab → an actionable wrapped tab; `temp:true` auto-closes it once idle, `matchum.closeTemp()` closes all now |
+| `matchum.tabs.list() / get(id) / find(re)` | wrapped tabs — `get(id)` by stable id, `find(re)` by url/title. Methods: `activate close reload moveToGroup text query exec snapshot click type screenshot visibleText` |
 
 Config runs inside the daemon (plain Node), so `require("fs")` etc. just work. Handler errors
 are isolated and logged to `~/.local/state/matchum/daemon.log`.
@@ -245,6 +246,9 @@ matchum-ctl recipes / on|off <name>       # list and toggle recipes
 matchum-ctl notify|reload|ext-reload      # notification, config reload, extension+daemon reload
 ```
 
+Tab arguments (`<regex>`) also accept `#<id>` — the id column from `matchum-ctl tabs` — to
+address a tab by its stable id instead of a url/title match.
+
 Run `matchum-doctor` to validate Node, the managed install, identity consistency, native-host
 registration, config, and the live daemon handshake without printing key material.
 
@@ -252,6 +256,7 @@ registration, config, and the live daemon handshake without printing key materia
 
 ```sh
 matchum-ctl eval 'const t = await matchum.tabs.find(/github/); return await t.query("h1")'
+matchum-ctl eval 'const t = await matchum.open("https://example.com"); return await t.visibleText()'
 matchum-ctl eval 'for (const t of await matchum.tabs.list()) if (/docs\./.test(t.url)) await t.reload()'
 ```
 
